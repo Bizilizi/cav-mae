@@ -23,6 +23,8 @@ import warnings
 import json
 from sklearn import metrics
 from traintest_ft import train, validate
+import datetime
+from torch import nn
 
 # finetune cav-mae model
 
@@ -143,34 +145,46 @@ with open("%s/args.pkl" % args.exp_dir, "wb") as f:
 with open(args.exp_dir + '/args.json', 'w') as f:
     json.dump(args.__dict__, f, indent=2)
 
-print('Now starting training for {:d} epochs.'.format(args.n_epochs))
-train(audio_model, train_loader, val_loader, args)
+# Fine tune model
+if args.n_epochs > 0:
+    print('Now starting training for {:d} epochs.'.format(args.n_epochs))
+    train(audio_model, train_loader, val_loader, args)
 
-# average the model weights of checkpoints, note it is not ensemble, and does not increase computational overhead
-def wa_model(exp_dir, start_epoch, end_epoch):
-    sdA = torch.load(exp_dir + '/models/audio_model.' + str(start_epoch) + '.pth', map_location='cpu')
-    model_cnt = 1
-    for epoch in range(start_epoch+1, end_epoch+1):
-        sdB = torch.load(exp_dir + '/models/audio_model.' + str(epoch) + '.pth', map_location='cpu')
+    # average the model weights of checkpoints, note it is not ensemble, and does not increase computational overhead
+    def wa_model(exp_dir, start_epoch, end_epoch):
+        sdA = torch.load(exp_dir + '/models/audio_model.' + str(start_epoch) + '.pth', map_location='cpu')
+        model_cnt = 1
+        for epoch in range(start_epoch+1, end_epoch+1):
+            sdB = torch.load(exp_dir + '/models/audio_model.' + str(epoch) + '.pth', map_location='cpu')
+            for key in sdA:
+                sdA[key] = sdA[key] + sdB[key]
+            model_cnt += 1
+        print('wa {:d} models from {:d} to {:d}'.format(model_cnt, start_epoch, end_epoch))
         for key in sdA:
-            sdA[key] = sdA[key] + sdB[key]
-        model_cnt += 1
-    print('wa {:d} models from {:d} to {:d}'.format(model_cnt, start_epoch, end_epoch))
-    for key in sdA:
-        sdA[key] = sdA[key] / float(model_cnt)
-    return sdA
+            sdA[key] = sdA[key] / float(model_cnt)
+        return sdA
 
-# evaluate with multiple frames
-if not isinstance(audio_model, torch.nn.DataParallel):
-    audio_model = torch.nn.DataParallel(audio_model)
-if args.wa == True:
-    sdA = wa_model(args.exp_dir, start_epoch=args.wa_start, end_epoch=args.wa_end)
-    torch.save(sdA, args.exp_dir + "/models/audio_model_wa.pth")
-else:
-    # if no wa, use the best checkpint
-    sdA = torch.load(args.exp_dir + '/models/best_audio_model.pth', map_location='cpu')
-msg = audio_model.load_state_dict(sdA, strict=True)
-print(msg)
+    # evaluate with multiple frames
+    if not isinstance(audio_model, torch.nn.DataParallel):
+        audio_model = torch.nn.DataParallel(audio_model)
+        
+    if args.wa == True:
+        sdA = wa_model(args.exp_dir, start_epoch=args.wa_start, end_epoch=args.wa_end)
+        torch.save(sdA, args.exp_dir + "/models/audio_model_wa.pth")
+    else:
+        # if no wa, use the best checkpint
+        sdA = torch.load(args.exp_dir + '/models/best_audio_model.pth', map_location='cpu')
+
+    msg = audio_model.load_state_dict(sdA, strict=True)
+    print(msg)
+
+# Eval model
+if args.loss == 'BCE':
+    loss_fn = nn.BCEWithLogitsLoss()
+elif args.loss == 'CE':
+    loss_fn = nn.CrossEntropyLoss()
+args.loss_fn = loss_fn
+
 audio_model.eval()
 
 # skil multi-frame evaluation, for audio-only model
@@ -203,6 +217,10 @@ else:
             audio_output = torch.nn.functional.sigmoid(audio_output.float())
 
         audio_output, target = audio_output.numpy(), target.numpy()
+        # save audio output and target
+        np.save(args.exp_dir + f'/audio_output_{frame}.npy', audio_output)
+        np.save(args.exp_dir + f'/target_{frame}.npy', target)
+
         multiframe_pred.append(audio_output)
         if args.metrics == 'mAP':
             cur_res = np.mean([stat['AP'] for stat in stats])
@@ -227,4 +245,5 @@ else:
         mAP = np.mean(AP)
         print('multi-frame mAP is {:.4f}'.format(mAP))
         res.append(mAP)
+        
     np.savetxt(args.exp_dir + '/mul_frame_res.csv', res, delimiter=',')
