@@ -15,6 +15,23 @@
 # you can change pretrain_path to other cav-mae models
 source activate cav-mae
 set -x
+
+# mount squahshfs
+METADATA_DIR=/tmp/$UID/
+MOUNTPOINT=$METADATA_DIR/$SLURM_JOBID
+
+trap cleanup EXIT
+
+cleanup () {
+fusermount -u $MOUNTPOINT
+rmdir $MOUNTPOINT
+rmdir /tmp/$UID || true
+}
+
+
+mkdir -p $MOUNTPOINT #create a directory in /tmp
+squashfuse /storage/slurm/zverev/datasets/cav-mae.squashfs/cav-mae.squashfs $MOUNTPOINT #mount 
+
 # # comment this line if not running on sls cluster
 # . /data/sls/scratch/share-201907/slstoolchainrc
 # source /data/sls/scratch/yuangong/avbyol/venv-a5/bin/activate
@@ -32,8 +49,8 @@ freeze_base=True
 head_lr=10 # newly initialized ft layers uses 10 times larger than the base lr
 
 bal=bal
-lr=1e-3
-epoch=10
+lr=1e-4
+epoch=30
 lrscheduler_start=2
 lrscheduler_decay=0.5
 lrscheduler_step=1
@@ -48,13 +65,27 @@ noise=True
 freqm=48
 timem=192
 mixup=0.5
-batch_size=512
+batch_size=48
 label_smooth=0.1
 
 dataset=vggsound
+
 tr_data=/storage/slurm/zverev/datasets/cav-mae/vggsound/metadata/vgg_train_cleaned.json
 te_data=/storage/slurm/zverev/datasets/cav-mae/vggsound/metadata/vgg_test_cleaned.json
+w_data=/storage/slurm/zverev/datasets/cav-mae/vggsound/metadata/vgg_train_cleaned_weight.csv
 
+# copy train and test files and repalce the path to the mountpoint
+cp $tr_data $METADATA_DIR/
+cp $te_data $METADATA_DIR/
+cp $w_data $METADATA_DIR/
+
+sed -i 's|/storage/slurm/zverev/datasets/cav-mae|'$MOUNTPOINT'|g' $METADATA_DIR/vgg_train_cleaned.json
+sed -i 's|/storage/slurm/zverev/datasets/cav-mae|'$MOUNTPOINT'|g' $METADATA_DIR/vgg_test_cleaned.json
+
+tr_data=$METADATA_DIR/vgg_train_cleaned.json
+te_data=$METADATA_DIR/vgg_test_cleaned.json
+
+# run the script
 exp_dir=./exp/testmae02-${dataset}-${model}-${lr}-${lrscheduler_start}-${lrscheduler_decay}-${lrscheduler_step}-bs${batch_size}-lda${lr_adapt}-${ftmode}-fz${freeze_base}-h${head_lr}-a5
 mkdir -p $exp_dir
 
